@@ -70,6 +70,9 @@ def gen_voronoi_map(n_points, img):
         sides = [[] for _ in range(n_points)]
 
         # 对每一个像素点, 计算他们与哪个vertex最近
+
+        # speed up via multiprocessing
+
         for i in tqdm(range(n_pixels)):
             known = diagonal  # 以对角线长度作为已知最短距离
             for j in range(n_points):
@@ -99,9 +102,6 @@ def gen_voronoi_map(n_points, img):
         for j, side in tqdm(enumerate(sides)):
             new_point = find_nearest_point(points=side, obstacle_map=img)
             new_points[j] = new_point
-
-
-
 
         # tmp = np.zeros([n_points, 3])
         # for i, pixel in enumerate(data):
