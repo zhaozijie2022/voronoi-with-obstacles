@@ -69,7 +69,7 @@ def get_navi_path(start, goal, obstacle_map):
 
 
 def line_distance(start, goal):
-    return np.linalg.norm(start - goal)
+    return np.abs(start[0] - goal[0]) + np.abs(start[1] - goal[1])
 
 
 
