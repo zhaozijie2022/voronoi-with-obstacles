@@ -3,6 +3,9 @@ import heapq
 
 
 def get_navi_path(start, goal, obstacle_map):
+    if obstacle_map[start] == 0 or obstacle_map[goal] == 0:
+        return None
+
     # Define possible movements (up, down, left, right)
     movements = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 

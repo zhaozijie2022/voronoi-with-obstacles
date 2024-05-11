@@ -25,6 +25,18 @@ def init_voronoi(n_points, map):
     xx_p, yy_p = np.meshgrid(x_p, y_p)
     points = np.array([xx_p.flatten(), yy_p.flatten()]).T
 
+    # points = []
+    # for i in range(n_points):
+    #     point = (np.random.randint(0, map.shape[0]),
+    #              np.random.randint(0, map.shape[1]))
+    #     while (point in points) or (map[point[0], point[1]] == 0):
+    #         point = (np.random.randint(0, map.shape[0]),
+    #                  np.random.randint(0, map.shape[1]))
+    #     points.append(point)
+    # points = np.array(points)
+
+    points = sort_points(points)
+
     density = np.zeros(len(pixels))
     for i in range(n_pixels):
         if map[pixels[i][0], pixels[i][1]] == 0:
@@ -33,6 +45,11 @@ def init_voronoi(n_points, map):
             density[i] = 1.
 
     return pixels, points, density
+
+
+def sort_points(points):
+    sorted_idx = np.argsort(points[:, 1])
+    return points[sorted_idx]
 
 
 def voronoi_show(map, points=None, sides=None, edges=None, adjacency=None):
@@ -60,16 +77,19 @@ def voronoi_show(map, points=None, sides=None, edges=None, adjacency=None):
     plt.show()
 
 
-def voronoi_save(p_name, data_dict):
-    os.makedirs(os.path.join("results/", p_name), exist_ok=True)
+def voronoi_save(n_points, r, data_dict):
+    px = "p%d" % n_points
+    rx = "r%d" % r
+    os.makedirs(os.path.join("results/", px, rx), exist_ok=True)
     for key, data in data_dict.items():
-        pkl_name = os.path.join("results/", p_name, key + "_" + p_name + ".pkl")
+        pkl_name = os.path.join("results/", px, rx, key + ".pkl")
         pkl.dump(data, open(pkl_name, "wb"))
 
 
 def pixel_find_nearest_points(args):
     i, pixel, points, n_points, map, diagonal = args
-    known = diagonal  # 以对角线长度作为已知最短距离
+    # known = diagonal  # 以对角线长度作为已知最短距离
+    known = 6 * (map.shape[0] + map.shape[0]) / np.sqrt(0.5 * n_points)
     belong = 0
 
     if map[pixel[0], pixel[1]] == 0:
@@ -129,25 +149,54 @@ def update_points(new_points, belongs, pixels, density, ):
     return new_points
 
 
+def process_connect(args):
+    map, points, i, judge_sides, known = args
+    js = []
+    for j in range(i + 1, n_points):
+        if line_distance(points[i], points[j]) > known:
+            continue
+        path = get_navi_path(
+            obstacle_map=map,
+            start=tuple([points[i][0], points[i][1]]),
+            goal=tuple([points[j][0], points[j][1]]),
+        )
+        if path is not None:
+            judge_set = judge_sides[i] + judge_sides[j]
+            if all([p in judge_set for p in path]):
+                js.append(j)
+    return i, js
+
+
 def update_connectivity(map, points, sides):
     judge_sides = copy.deepcopy(sides)
     n_points = len(points)
     for i in range(n_points):
         judge_sides[i] = [tuple(p) for p in sides[i]]
     connectivity = np.zeros([n_points, n_points])
-    for i in tqdm(range(n_points)):
-        for j in range(i + 1, n_points):
-            if np.linalg.norm(points[i] - points[j]) > 50:
-                continue
-            path = get_navi_path(
-                obstacle_map=map,
-                start=tuple([points[i][0], points[i][1]]),
-                goal=tuple([points[j][0], points[j][1]]),
-            )
-            judge_set = judge_sides[i] + judge_sides[j]
-            if all([p in judge_set for p in path]):
-                connectivity[i, j] = 1
-                connectivity[j, i] = 1
+    known = 6 * (map.shape[0] + map.shape[0]) / np.sqrt(0.5 * n_points)
+
+    pool = multiprocessing.Pool()
+    args_list = [(map, points, i, judge_sides, known) for i in range(n_points)]
+    for result in tqdm(pool.imap_unordered(process_connect, args_list), total=n_points):
+        i, js = result
+        for j in js:
+            connectivity[i, j] = connectivity[j, i] = 1
+    pool.close()
+    pool.join()
+
+    # for i in tqdm(range(n_points)):
+    #     for j in range(i + 1, n_points):
+    #         if np.linalg.norm(points[i] - points[j]) > 50:
+    #             continue
+    #         path = get_navi_path(
+    #             obstacle_map=map,
+    #             start=tuple([points[i][0], points[i][1]]),
+    #             goal=tuple([points[j][0], points[j][1]]),
+    #         )
+    #         judge_set = judge_sides[i] + judge_sides[j]
+    #         if all([p in judge_set for p in path]):
+    #             connectivity[i, j] = 1
+    #             connectivity[j, i] = 1
 
     return connectivity
 
@@ -156,34 +205,37 @@ def voronoi_map(n_points, map):
     pixels, points, density = init_voronoi(n_points, map)
     n_pixels, n_points = len(pixels), len(points)
 
-    new_points = copy.deepcopy(points)
+    past_points = points.copy()
     belongs = [0] * len(pixels)  # 记录每个pixel属于哪个side
     sides = [[] for _ in range(n_points)]  # 记录每个side包含哪些pixel
     connectivity = np.zeros([n_points, n_points])  # 记录两个side是否连通
 
     max_r = 40
     diagonal = map.shape[0] + map.shape[1]
-    data_dict = {"points": new_points, "belongs": belongs, "sides": sides, "connectivity": connectivity}
+    data_dict = {"points": points, "belongs": belongs, "sides": sides, "connectivity": connectivity}
     os.makedirs("results", exist_ok=True)
+    os.makedirs(os.path.join("results/", "p%d" % n_points), exist_ok=True)
     for r in range(max_r):
 
-        sides, belongs = voronoi_partition(map, new_points, pixels, diagonal)
+        points = sort_points(points)
+
+        sides, belongs = voronoi_partition(map, points, pixels, diagonal)
         data_dict["sides"], data_dict["belongs"] = sides, belongs
 
-        new_points = update_points(new_points, belongs, pixels, density)
-        data_dict["points"] = new_points
+        points = update_points(points, belongs, pixels, density)
+        data_dict["points"] = points
 
-        connectivity = update_connectivity(map, new_points, sides)
+        connectivity = update_connectivity(map, points, sides)
         data_dict["connectivity"] = connectivity
-        print(connectivity)
+        # print(connectivity)
 
-        voronoi_show(map, points=new_points, sides=sides, adjacency=connectivity)
-        voronoi_save("p%d_r%d" % (n_points, r), data_dict)
+        voronoi_show(map, points=points, sides=sides, adjacency=connectivity)
+        voronoi_save(n_points, r, data_dict)
 
-        err = np.sum(np.linalg.norm(points - new_points, axis=1))
+        err = np.sum(np.linalg.norm(past_points - points, axis=1))
 
-        if err > 5.:
-            points = new_points.copy()
+        if err > 1.:
+            past_points = points.copy()
         else:
             print("Converged!")
             return
@@ -197,62 +249,4 @@ if __name__ == "__main__":
     n_points = 2 * 4 ** 2
     voronoi_map(n_points, map)
 
-# def find_nearest_point(pixels, obstacle_map):
-#     # 遍历side中的所有pixels, 寻找与所有点距离之和最近的点 作为质心, 即新的vertex
-#     min_distance_sum = float('inf')  # 初始化最小距离和为正无穷大
-#     nearest_point = None
-#
-#     for pixel in pixels:
-#         if obstacle_map[int(pixel[0]), int(pixel[1])] == 0:
-#             continue
-#         distance_sum = 0
-#
-#         for other_pixel in pixels:
-#             if obstacle_map[int(other_pixel[0]), int(other_pixel[1])] == 0:
-#                 continue
-#             if not (pixel == other_pixel).all():
-#                 # distance_sum += len(get_navi_path(
-#                 #     obstacle_map=obstacle_map,
-#                 #     start=tuple([point[0], point[1]]),
-#                 #     goal=tuple([other_point[0], other_point[1]])
-#                 # ))
-#                 distance_sum += line_distance(pixel, other_pixel)
-#                 if distance_sum > min_distance_sum:
-#                     break
-#
-#         if distance_sum < min_distance_sum:
-#             min_distance_sum = distance_sum
-#             nearest_point = pixel
-#
-#     return nearest_point
-#
-#
-# def process_centroid(args):
-#     pixels, obstacle_map = args
-#     min_distance_sum = float('inf')  # 初始化最小距离和为正无穷大
-#     nearest_point = None
-#
-#     for pixel in pixels:
-#         if obstacle_map[int(pixel[0]), int(pixel[1])] == 0:
-#             continue
-#         distance_sum = 0
-#
-#         for other_pixel in pixels:
-#             if obstacle_map[int(other_pixel[0]), int(other_pixel[1])] == 0:
-#                 continue
-#             if not (pixel == other_pixel).all():
-#                 distance_sum += len(calculate_shortest_distance(
-#                     obstacle_map=obstacle_map,
-#                     start=tuple([pixel[0], pixel[1]]),
-#                     goal=tuple([other_pixel[0], other_pixel[1]])
-#                 ))
-#                 # distance_sum += line_distance(pixel, other_pixel)
-#
-#                 if distance_sum > min_distance_sum:
-#                     break
-#
-#         if distance_sum < min_distance_sum:
-#             min_distance_sum = distance_sum
-#             nearest_point = pixel
-#
-#     return nearest_point
+
